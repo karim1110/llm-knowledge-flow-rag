@@ -1,0 +1,65 @@
+# Data directories (large files)
+data/
+indexes/
+logs/
+
+# Specific files to exclude
+question_generation.py
+createPatentSample.ipynb
+
+# Python cache
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+*.yml
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SLURM logs (already in logs/ but just in case)
+*.out
+*.err
+slurm-*.out
+
+# Backup files
+*.old
+*.bak
+*.backup
+*.broken
+
+# Large binary files
+*.index
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Temporary files
+tmp/
+temp/
+*.tmp
