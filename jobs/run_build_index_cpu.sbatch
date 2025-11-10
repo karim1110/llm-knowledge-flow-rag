@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --account=pi-jevans
 #SBATCH --partition=jevans
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=1300GB
-#SBATCH --time=35:00:00
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=1350GB
+#SBATCH --time=6:00:00
 #SBATCH --output=/project/jevans/nadav/qaApproach/logs/build_faiss_index_v2_cpu_%j.out
 #SBATCH --error=/project/jevans/nadav/qaApproach/logs/build_faiss_index_v2_cpu_%j.err
 

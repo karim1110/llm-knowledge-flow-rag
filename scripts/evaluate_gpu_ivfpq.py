@@ -87,34 +87,10 @@ def embed_texts_vllm(texts, model, tokenizer, max_tokens=32000, microbatch=1024)
     pooled = pooled / norms
     return pooled
 
-def calculate_metrics(retrieved_ids, ground_truth_id, top_k_values):
-    """Calculate Recall@K and MRR@K"""
-    results = {}
-    
-    # Extract paper ID from paragraph ID (e.g., "12345_p3" -> "12345")
-    gt_paper = ground_truth_id.split('_')[0] if isinstance(ground_truth_id, str) else str(ground_truth_id)
-    
-    for k in top_k_values:
-        top_k_ids = retrieved_ids[:k]
-        
-        # Extract paper IDs from retrieved paragraph IDs
-        retrieved_papers = [rid.split('_')[0] if isinstance(rid, str) else str(rid) for rid in top_k_ids]
-        
-        # Recall@K: Is ground truth in top K?
-        results[f'recall@{k}'] = 1 if gt_paper in retrieved_papers else 0
-        
-        # MRR@K: Reciprocal rank of first match
-        try:
-            rank = retrieved_papers.index(gt_paper) + 1  # 1-indexed
-            results[f'mrr@{k}'] = 1.0 / rank
-        except ValueError:
-            results[f'mrr@{k}'] = 0.0
-    
-    return results
-
 def main():
     print("="*80)
     print("RAG Evaluation - GPU IVF-PQ Index (Compressed)")
+    print("Understanding-Based Knowledge Flow Measurement")
     print("="*80)
     
     # Check GPU
@@ -165,10 +141,18 @@ def main():
     all_questions = []
     for f in question_files:
         df = pd.read_csv(f)
+        # Infer bloom_level from filename (e.g., questions_remembering.csv -> remembering)
+        bloom_level = f.stem.replace('questions_', '')
+        df['bloom_level'] = bloom_level
+        # Keep patent_id as is (this is the technology being questioned)
+        if 'patent_id' in df.columns:
+            df['patent_id'] = df['patent_id'].astype(str)
         all_questions.append(df)
     
     questions_df = pd.concat(all_questions, ignore_index=True)
     print(f"✓ Loaded {len(questions_df):,} questions")
+    print(f"  Bloom levels: {questions_df['bloom_level'].unique().tolist()}")
+    print(f"  Patents: {questions_df['patent_id'].nunique()} unique patents")
     
     # Embed questions
     print("\nEmbedding questions...")
@@ -179,47 +163,74 @@ def main():
     print(f"✓ Embedded {len(question_embeddings):,} questions")
     
     # Retrieve for each question
-    print(f"\nRetrieving top {max(TOP_K)} results for each question...")
+    print(f"\nRetrieving top {max(TOP_K)} scientific paragraphs for each patent question...")
     max_k = max(TOP_K)
     distances, indices = index.search(question_embeddings, max_k)
     
-    # Map indices to paper_paragraph_ids
+    # Build results: patent question → retrieved scientific papers
     results = []
     for idx, row in tqdm(questions_df.iterrows(), total=len(questions_df), desc="Processing"):
         retrieved_indices = indices[idx]
-        retrieved_ids = [id_mapping[i] for i in retrieved_indices if i < len(id_mapping)]
+        retrieved_paragraph_ids = [id_mapping[i] for i in retrieved_indices if i < len(id_mapping)]
         retrieved_dists = distances[idx]
         
-        # Calculate metrics
-        metrics = calculate_metrics(retrieved_ids, row['paper_id'], TOP_K)
+        # Extract unique paper IDs from paragraph IDs (e.g., "12345_p3" -> "12345")
+        retrieved_paper_ids = [pid.split('_')[0] if isinstance(pid, str) else str(pid) 
+                              for pid in retrieved_paragraph_ids]
+        
+        # For top K values, track unique papers retrieved
+        papers_at_k = {}
+        for k in TOP_K:
+            unique_papers = list(dict.fromkeys(retrieved_paper_ids[:k]))  # Preserve order, remove duplicates
+            papers_at_k[f'unique_papers@{k}'] = len(unique_papers)
         
         result = {
+            'patent_id': row['patent_id'],
             'question': row['question'],
-            'ground_truth_id': row['paper_id'],
-            'bloom_level': row.get('bloom_level', 'unknown'),
-            'top_10_retrieved': ';'.join(map(str, retrieved_ids[:10])),
-            'top_10_distances': ';'.join(map(str, retrieved_dists[:10])),
-            **metrics
+            'bloom_level': row['bloom_level'],
+            'patent_title': row.get('patent_title', ''),
+            'cpc_class': row.get('cpc_class', ''),
+            # Top 10 retrieved paragraphs (for inspection)
+            'top_10_paragraph_ids': ';'.join(retrieved_paragraph_ids[:10]),
+            'top_10_distances': ';'.join(map(lambda x: f'{x:.4f}', retrieved_dists[:10])),
+            # Top 100 unique papers (for analysis)
+            'top_100_papers': ';'.join(list(dict.fromkeys(retrieved_paper_ids[:100]))),
+            **papers_at_k
         }
         results.append(result)
     
     results_df = pd.DataFrame(results)
     
-    # Calculate aggregate metrics
+    # Summary statistics
     print("\n" + "="*80)
-    print("RESULTS")
+    print("RETRIEVAL SUMMARY")
     print("="*80)
+    print(f"Total questions processed: {len(results_df):,}")
+    print(f"Unique patents: {results_df['patent_id'].nunique()}")
+    print(f"\nAverage unique papers retrieved per question:")
     for k in TOP_K:
-        recall = results_df[f'recall@{k}'].mean()
-        mrr = results_df[f'mrr@{k}'].mean()
-        print(f"Recall@{k:3d}: {recall:.4f}  |  MRR@{k:3d}: {mrr:.4f}")
+        avg_papers = results_df[f'unique_papers@{k}'].mean()
+        print(f"  Top {k:3d}: {avg_papers:.1f} unique papers")
+    
+    print(f"\nBy Bloom level:")
+    for level in results_df['bloom_level'].unique():
+        count = (results_df['bloom_level'] == level).sum()
+        print(f"  {level:15s}: {count:4d} questions")
     
     # Save results
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     results_df.to_csv(OUTPUT_FILE, index=False)
     print(f"\n✓ Results saved to: {OUTPUT_FILE}")
     
+    print("\n" + "="*80)
+    print("Next Steps for Analysis:")
+    print("="*80)
+    print("1. Examine top_10_paragraph_ids to see which scientific papers were retrieved")
+    print("2. Aggregate by CPC class to build epistemic linkage matrix Ekl")
+    print("3. Compare retrieval patterns across Bloom levels")
+    print("4. Optional: Use LLM to evaluate if retrieved paragraphs answer the questions")
     print("\nEvaluation complete!")
+
 
 if __name__ == '__main__':
     main()

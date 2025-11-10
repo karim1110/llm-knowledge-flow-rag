@@ -2,6 +2,7 @@
 data/
 indexes/
 logs/
+models/
 
 # Specific files to exclude
 question_generation.py
