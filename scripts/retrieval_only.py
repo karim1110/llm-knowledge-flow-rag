@@ -15,6 +15,7 @@ from collections import defaultdict
 INDEX_FILE = "indexes/faiss_qwen06_ivfpq.index"
 ID_MAPPING_FILE = "indexes/patent_id_mapping_ivf.npy"
 EMBEDDINGS_DIR = "data/question_generation/embeddings"
+PARAGRAPH_DATA_DIR = "/project/jevans/apto_data_engineering/personalFolders/nadav/arxiv_emb"
 OUTPUT_DIR = "data/question_generation/retrieval_results"
 OUTPUT_JSON = os.path.join(OUTPUT_DIR, "retrieval_results_hierarchical.json")
 K = 100  # Top K results
@@ -28,6 +29,42 @@ EMBEDDING_FILES = [
 def extract_paper_id(paragraph_id):
     """Extract paper ID from paragraph ID (e.g., '2510268_p5' -> '2510268')"""
     return paragraph_id.split('_')[0]
+
+def load_paragraph_texts(paragraph_ids):
+    """Load paragraph texts from embedding chunks."""
+    from pathlib import Path
+    
+    print(f"\nLoading {len(paragraph_ids)} paragraph texts...")
+    paragraph_texts = {}
+    needed_ids = set(paragraph_ids)
+    
+    # Search through embedding directories
+    emb_dirs = sorted(Path(PARAGRAPH_DATA_DIR).glob("qwen_06_embds_*"))
+    
+    for emb_dir in tqdm(emb_dirs, desc="Searching embedding dirs"):
+        for chunk_file in emb_dir.glob("chunk_*.npz"):
+            try:
+                data = np.load(chunk_file, allow_pickle=True)
+                
+                if 'texts' in data and 'paper_paragraph_ids' in data:
+                    ids = data['paper_paragraph_ids']
+                    texts = data['texts']
+                    
+                    for pid, text in zip(ids, texts):
+                        if pid in needed_ids and pid not in paragraph_texts:
+                            paragraph_texts[pid] = text
+                
+                # Stop early if found all
+                if len(paragraph_texts) == len(needed_ids):
+                    break
+            except Exception as e:
+                continue
+        
+        if len(paragraph_texts) == len(needed_ids):
+            break
+    
+    print(f"Found {len(paragraph_texts)} / {len(needed_ids)} paragraph texts")
+    return paragraph_texts
 
 def main():
     print("="*80)
@@ -58,6 +95,7 @@ def main():
     
     # Initialize hierarchical structure
     patents = {}
+    all_paragraph_ids = set()  # Track all paragraph IDs for text loading
     
     # Process each embedding file
     for emb_file, meta_file, bloom_level in EMBEDDING_FILES:
@@ -118,10 +156,14 @@ def main():
             papers_dict = defaultdict(list)
             for rank, para_id in enumerate(top_k_paragraph_ids[:10], start=1):
                 paper_id = extract_paper_id(para_id)
+                all_paragraph_ids.add(para_id)  # Track for text loading later
                 papers_dict[paper_id].append({
                     'paragraph_id': para_id,
                     'rank': rank,
                     'has_paragraph': True,
+                    'paragraph_text': None,  # Will be filled in next step
+                    'contains_answer': None,  # Will be filled by verification script
+                    'answer': None,  # Will be filled by verification script  
                     'paragraph_type': None  # Placeholder for future classification
                 })
             
@@ -149,6 +191,21 @@ def main():
             }
             
             patents[patent_id]['question_types'][bloom_level].append(question_entry)
+    
+    # Load paragraph texts
+    print(f"\n{'='*80}")
+    print("Loading paragraph texts...")
+    print(f"{'='*80}")
+    paragraph_texts = load_paragraph_texts(list(all_paragraph_ids))
+    
+    # Fill in paragraph texts
+    print("Filling paragraph texts into results...")
+    for patent_data in patents.values():
+        for qtype in ['remembering', 'understanding']:
+            for question in patent_data['question_types'][qtype]:
+                for paper in question['retrieved_papers']:
+                    for para in paper['paragraphs']:
+                        para['paragraph_text'] = paragraph_texts.get(para['paragraph_id'], None)
     
     # Save results
     print(f"\n{'='*80}")
