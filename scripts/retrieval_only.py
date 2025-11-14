@@ -1,18 +1,22 @@
 """
 Retrieval only script for GPU job (no model loading, no internet required)
 Loads pre-computed question embeddings and performs FAISS search
+Outputs hierarchical JSON structure organized by patent -> question type -> questions -> papers
 """
 import os
+import json
 import pandas as pd
 import numpy as np
 import faiss
 from tqdm import tqdm
+from collections import defaultdict
 
 # Configuration
 INDEX_FILE = "indexes/faiss_qwen06_ivfpq.index"
 ID_MAPPING_FILE = "indexes/patent_id_mapping_ivf.npy"
 EMBEDDINGS_DIR = "data/question_generation/embeddings"
 OUTPUT_DIR = "data/question_generation/retrieval_results"
+OUTPUT_JSON = os.path.join(OUTPUT_DIR, "retrieval_results_hierarchical.json")
 K = 100  # Top K results
 
 # Embedding files
@@ -52,9 +56,10 @@ def main():
     # Create output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # Process each embedding file
-    all_results = []
+    # Initialize hierarchical structure
+    patents = {}
     
+    # Process each embedding file
     for emb_file, meta_file, bloom_level in EMBEDDING_FILES:
         print(f"\n{'='*80}")
         print(f"Processing: {bloom_level}")
@@ -77,46 +82,116 @@ def main():
         # Process results
         print("Processing results...")
         for idx in tqdm(range(len(df)), desc="Questions"):
-            patent_id = df.iloc[idx]['patent_id']
-            question = df.iloc[idx]['question']
+            row = df.iloc[idx]
+            patent_id = str(row['patent_id'])
+            question = row['question']
             
             # Get top K paragraph IDs
             top_k_indices = indices[idx]
             top_k_paragraph_ids = [id_mapping[i] for i in top_k_indices]
             
-            # Extract unique paper IDs
+            # Extract unique paper IDs (preserving order)
             top_k_paper_ids = [extract_paper_id(pid) for pid in top_k_paragraph_ids]
-            unique_papers = list(dict.fromkeys(top_k_paper_ids))  # Preserve order
+            unique_papers = list(dict.fromkeys(top_k_paper_ids))
             
             # Calculate unique papers at different K values
             unique_at_10 = len(set([extract_paper_id(id_mapping[i]) for i in indices[idx][:10]]))
             unique_at_50 = len(set([extract_paper_id(id_mapping[i]) for i in indices[idx][:50]]))
             unique_at_100 = len(set([extract_paper_id(id_mapping[i]) for i in indices[idx][:100]]))
             
-            all_results.append({
-                'patent_id': patent_id,
+            # === Build Hierarchical Structure ===
+            
+            # Initialize patent entry if not exists
+            if patent_id not in patents:
+                patents[patent_id] = {
+                    'cpc': row['cpc_class'],
+                    'grant_year': None,  # Not available in current dataset
+                    'patent_title': row['patent_title'],
+                    'patent_abstract': row['patent_abstract'],
+                    'question_types': {
+                        'remembering': [],
+                        'understanding': []
+                    }
+                }
+            
+            # Group top 10 paragraphs by paper
+            papers_dict = defaultdict(list)
+            for rank, para_id in enumerate(top_k_paragraph_ids[:10], start=1):
+                paper_id = extract_paper_id(para_id)
+                papers_dict[paper_id].append({
+                    'paragraph_id': para_id,
+                    'rank': rank,
+                    'has_paragraph': True,
+                    'paragraph_type': None  # Placeholder for future classification
+                })
+            
+            # Convert to list of papers with metadata
+            retrieved_papers = []
+            for paper_id, paragraphs in papers_dict.items():
+                retrieved_papers.append({
+                    'paper_id': paper_id,
+                    'metadata': {},  # Placeholder for paper metadata (title, year, etc.)
+                    'paragraphs': sorted(paragraphs, key=lambda x: x['rank'])
+                })
+            
+            # Sort papers by earliest paragraph rank
+            retrieved_papers.sort(key=lambda x: min(p['rank'] for p in x['paragraphs']))
+            
+            # Add question to appropriate type
+            question_entry = {
                 'question': question,
-                'bloom_level': bloom_level,
-                'top_10_paragraph_ids': '|'.join(top_k_paragraph_ids[:10]),
-                'top_100_papers': '|'.join(unique_papers),
-                'unique_papers@10': unique_at_10,
-                'unique_papers@50': unique_at_50,
-                'unique_papers@100': unique_at_100
-            })
+                'retrieved_papers': retrieved_papers,
+                'stats': {
+                    'unique_papers@10': unique_at_10,
+                    'unique_papers@50': unique_at_50,
+                    'unique_papers@100': unique_at_100
+                }
+            }
+            
+            patents[patent_id]['question_types'][bloom_level].append(question_entry)
     
-    # Save all results
+    # Save results
     print(f"\n{'='*80}")
     print("Saving results...")
     print(f"{'='*80}")
     
-    results_df = pd.DataFrame(all_results)
-    output_file = os.path.join(OUTPUT_DIR, "retrieval_results.csv")
-    results_df.to_csv(output_file, index=False)
+    # Save hierarchical JSON
+    with open(OUTPUT_JSON, 'w') as f:
+        json.dump(patents, f, indent=2)
+    print(f"✓ Saved hierarchical JSON to: {OUTPUT_JSON}")
     
-    print(f"Saved {len(results_df)} results to: {output_file}")
-    print(f"\nColumns: {list(results_df.columns)}")
-    print(f"\nSample result:")
-    print(results_df.iloc[0])
+    # Print summary
+    print(f"\n{'='*80}")
+    print("Summary")
+    print(f"{'='*80}")
+    
+    total_questions = sum(
+        len(p['question_types']['remembering']) + len(p['question_types']['understanding'])
+        for p in patents.values()
+    )
+    
+    print(f"Total patents: {len(patents)}")
+    print(f"Total questions: {total_questions}")
+    
+    # Sample structure
+    if patents:
+        sample_patent_id = list(patents.keys())[0]
+        sample_patent = patents[sample_patent_id]
+        
+        print(f"\nSample structure for patent {sample_patent_id}:")
+        print(f"  CPC: {sample_patent['cpc']}")
+        print(f"  Remembering questions: {len(sample_patent['question_types']['remembering'])}")
+        print(f"  Understanding questions: {len(sample_patent['question_types']['understanding'])}")
+        
+        if sample_patent['question_types']['remembering']:
+            q = sample_patent['question_types']['remembering'][0]
+            print(f"\n  Sample question: {q['question'][:80]}...")
+            print(f"  Retrieved papers: {len(q['retrieved_papers'])}")
+            if q['retrieved_papers']:
+                paper = q['retrieved_papers'][0]
+                print(f"    Top paper: {paper['paper_id']}")
+                print(f"    Paragraphs: {len(paper['paragraphs'])}")
+    
     print(f"\n{'='*80}")
     print("Retrieval completed successfully!")
     print(f"{'='*80}")

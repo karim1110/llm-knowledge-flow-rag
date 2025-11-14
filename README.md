@@ -25,5 +25,10 @@ Patents → Questions (Bloom's taxonomy) → Embeddings → FAISS Retrieval → 
 
 4. **Retrieval** (`scripts/retrieval_only.py`)
    - Searches FAISS index for top-100 most relevant scientific paragraphs per question
-   - Extracts unique paper IDs and counts at K=10, 50, 100
-   - Output: `data/question_generation/retrieval_results/retrieval_results.csv`
+   - Outputs hierarchical JSON organized by patent → question type → questions → papers → paragraphs
+   - Output: `data/question_generation/retrieval_results/retrieval_results_hierarchical.json`
+
+5. **Results Viewer** (`scripts/view_hierarchical_results.py`)
+   - Interactive exploration of retrieval results
+   - View by patent, question type, or specific questions
+   - Usage: `python3 scripts/view_hierarchical_results.py [--patent ID] [--question-type TYPE]`
