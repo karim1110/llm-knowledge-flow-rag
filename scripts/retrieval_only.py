@@ -4,7 +4,9 @@ Loads pre-computed question embeddings and performs FAISS search
 Outputs hierarchical JSON structure organized by patent -> question type -> questions -> papers
 """
 import os
+import sys
 import json
+import argparse
 import pandas as pd
 import numpy as np
 import faiss
@@ -15,7 +17,7 @@ from collections import defaultdict
 INDEX_FILE = "indexes/faiss_qwen06_ivfpq.index"
 ID_MAPPING_FILE = "indexes/patent_id_mapping_ivf.npy"
 EMBEDDINGS_DIR = "data/question_generation/embeddings"
-PARAGRAPH_DATA_DIR = "/project/jevans/apto_data_engineering/personalFolders/nadav/arxiv_emb"
+PARQUET_SHARDS_DIR = "/project/jevans/apto_data_engineering/data/arxiv/s2_arxiv_full_text_grobid/shards_partitioned"
 OUTPUT_DIR = "data/question_generation/retrieval_results"
 OUTPUT_JSON = os.path.join(OUTPUT_DIR, "retrieval_results_hierarchical.json")
 K = 100  # Top K results
@@ -30,45 +32,155 @@ def extract_paper_id(paragraph_id):
     """Extract paper ID from paragraph ID (e.g., '2510268_p5' -> '2510268')"""
     return paragraph_id.split('_')[0]
 
-def load_paragraph_texts(paragraph_ids):
-    """Load paragraph texts from embedding chunks."""
+def extract_paragraph_number(paragraph_id):
+    """Extract paragraph number from ID (e.g., '2510268_p5' -> 5)"""
+    try:
+        return int(paragraph_id.split('_p')[1])
+    except (IndexError, ValueError):
+        return None
+
+def get_adjacent_paragraph_ids(paragraph_id):
+    """Get IDs of previous and next paragraphs if they exist."""
+    paper_id = extract_paper_id(paragraph_id)
+    para_num = extract_paragraph_number(paragraph_id)
+    
+    if para_num is None:
+        return None, None
+    
+    prev_id = f"{paper_id}_p{para_num - 1}" if para_num > 0 else None
+    next_id = f"{paper_id}_p{para_num + 1}"
+    
+    return prev_id, next_id
+
+def merge_with_context(paragraph_id, paragraph_text, all_paragraphs, min_length=200):
+    """
+    Merge paragraph with adjacent paragraphs if it's too short.
+    
+    Args:
+        paragraph_id: The paragraph ID
+        paragraph_text: The main paragraph text
+        all_paragraphs: Dict of all loaded paragraphs
+        min_length: Minimum character length threshold
+    
+    Returns:
+        Merged text with context if needed, otherwise original text
+    """
+    # If paragraph is long enough, return as-is
+    if len(paragraph_text) >= min_length:
+        return paragraph_text
+    
+    # Get adjacent paragraph IDs
+    prev_id, next_id = get_adjacent_paragraph_ids(paragraph_id)
+    
+    # Build merged text
+    parts = []
+    
+    # Add previous paragraph if exists
+    if prev_id and prev_id in all_paragraphs:
+        prev_text = all_paragraphs[prev_id]
+        if prev_text:  # Only add if not empty
+            parts.append(f"[Previous paragraph]: {prev_text}")
+    
+    # Add main paragraph
+    parts.append(paragraph_text)
+    
+    # Add next paragraph if exists
+    if next_id and next_id in all_paragraphs:
+        next_text = all_paragraphs[next_id]
+        if next_text:  # Only add if not empty
+            parts.append(f"[Next paragraph]: {next_text}")
+    
+    return "\n\n".join(parts)
+
+def load_paragraph_texts(paragraph_ids, load_adjacent=False):
+    """
+    Load paragraph texts from Parquet shards.
+    
+    Args:
+        paragraph_ids: List of paragraph IDs to load
+        load_adjacent: If True, also load adjacent paragraphs for context merging
+    """
     from pathlib import Path
+    import pyarrow.parquet as pq
     
     print(f"\nLoading {len(paragraph_ids)} paragraph texts...")
+    if load_adjacent:
+        print("Will also load adjacent paragraphs for context merging...")
+    
     paragraph_texts = {}
     needed_ids = set(paragraph_ids)
     
-    # Search through embedding directories
-    emb_dirs = sorted(Path(PARAGRAPH_DATA_DIR).glob("qwen_06_embds_*"))
+    # If loading adjacent, expand the needed IDs
+    if load_adjacent:
+        expanded_ids = set(needed_ids)
+        for pid in paragraph_ids:
+            prev_id, next_id = get_adjacent_paragraph_ids(pid)
+            if prev_id:
+                expanded_ids.add(prev_id)
+            if next_id:
+                expanded_ids.add(next_id)
+        print(f"Expanded to {len(expanded_ids)} IDs (including adjacent paragraphs)")
+        needed_ids = expanded_ids
     
-    for emb_dir in tqdm(emb_dirs, desc="Searching embedding dirs"):
-        for chunk_file in emb_dir.glob("chunk_*.npz"):
+    # Find all shard directories
+    shards_dir = Path(PARQUET_SHARDS_DIR)
+    shard_dirs = sorted([d for d in shards_dir.iterdir() if d.is_dir() and d.name.startswith('shard=')])
+    
+    print(f"Found {len(shard_dirs)} parquet shards")
+    
+    # Search through shards
+    for shard_dir in tqdm(shard_dirs, desc="Searching parquet shards"):
+        # Find parquet files in this shard
+        parquet_files = list(shard_dir.glob("*.parquet"))
+        
+        for pq_file in parquet_files:
             try:
-                data = np.load(chunk_file, allow_pickle=True)
+                # Read parquet file
+                table = pq.read_table(pq_file, columns=['paper_paragraph_id', 'paragraph_text'])
+                df = table.to_pandas()
                 
-                if 'texts' in data and 'paper_paragraph_ids' in data:
-                    ids = data['paper_paragraph_ids']
-                    texts = data['texts']
-                    
-                    for pid, text in zip(ids, texts):
-                        if pid in needed_ids and pid not in paragraph_texts:
-                            paragraph_texts[pid] = text
+                # Filter to only needed IDs
+                mask = df['paper_paragraph_id'].isin(needed_ids)
+                matching_rows = df[mask]
+                
+                # Add to results
+                for _, row in matching_rows.iterrows():
+                    pid = row['paper_paragraph_id']
+                    if pid not in paragraph_texts:
+                        paragraph_texts[pid] = row['paragraph_text']
                 
                 # Stop early if found all
                 if len(paragraph_texts) == len(needed_ids):
                     break
             except Exception as e:
+                # Skip corrupted or incompatible files
                 continue
         
         if len(paragraph_texts) == len(needed_ids):
             break
     
     print(f"Found {len(paragraph_texts)} / {len(needed_ids)} paragraph texts")
+    
+    # If loading adjacent, merge context for short paragraphs
+    if load_adjacent:
+        original_count = len(paragraph_ids)
+        merged_count = 0
+        for pid in paragraph_ids:
+            if pid in paragraph_texts:
+                original_text = paragraph_texts[pid]
+                merged_text = merge_with_context(pid, original_text, paragraph_texts)
+                if merged_text != original_text:
+                    paragraph_texts[pid] = merged_text
+                    merged_count += 1
+        print(f"Merged context for {merged_count}/{original_count} short paragraphs")
+    
     return paragraph_texts
 
-def main():
+def main(limit_questions=None):
     print("="*80)
     print("Loading FAISS index...")
+    if limit_questions:
+        print(f"Will process only first {limit_questions} questions for testing")
     print("="*80)
     
     # Load FAISS index
@@ -111,11 +223,20 @@ def main():
         # Load metadata
         meta_path = os.path.join(EMBEDDINGS_DIR, meta_file)
         df = pd.read_csv(meta_path)
-        print(f"Loaded metadata: {len(df)} questions")
+        
+        # Apply limit if specified
+        if limit_questions:
+            df = df.head(limit_questions)
+            print(f"Limited to first {len(df)} questions for testing")
+        else:
+            print(f"Loaded metadata: {len(df)} questions")
+        
+        # Get embeddings for the questions we're processing
+        embeddings_subset = embeddings[:len(df)]
         
         # Perform retrieval
         print(f"Searching for top {K} results per question...")
-        distances, indices = index.search(embeddings, K)
+        distances, indices = index.search(embeddings_subset, K)
         
         # Process results
         print("Processing results...")
@@ -192,20 +313,17 @@ def main():
             
             patents[patent_id]['question_types'][bloom_level].append(question_entry)
     
-    # Load paragraph texts
+    # Skip loading paragraph texts - do this in separate job
+    # Just initialize paragraph_text fields as None
     print(f"\n{'='*80}")
-    print("Loading paragraph texts...")
+    print("Initializing paragraph text fields (load texts separately)...")
     print(f"{'='*80}")
-    paragraph_texts = load_paragraph_texts(list(all_paragraph_ids))
-    
-    # Fill in paragraph texts
-    print("Filling paragraph texts into results...")
     for patent_data in patents.values():
         for qtype in ['remembering', 'understanding']:
             for question in patent_data['question_types'][qtype]:
                 for paper in question['retrieved_papers']:
                     for para in paper['paragraphs']:
-                        para['paragraph_text'] = paragraph_texts.get(para['paragraph_id'], None)
+                        para['paragraph_text'] = None
     
     # Save results
     print(f"\n{'='*80}")
@@ -254,4 +372,9 @@ def main():
     print(f"{'='*80}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Run FAISS retrieval (paragraph texts loaded separately)')
+    parser.add_argument('--limit', type=int, default=None,
+                      help='Limit to first N questions for testing (default: process all)')
+    args = parser.parse_args()
+    
+    main(limit_questions=args.limit)

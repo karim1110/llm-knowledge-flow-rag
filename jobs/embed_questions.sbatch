@@ -1,33 +1,29 @@
 #!/bin/bash
 #SBATCH --job-name=embed_questions
-#SBATCH --account=ssd
-#SBATCH --partition=ssd-gpu
-#SBATCH --qos=ssd
+#SBATCH --account=pi-jevans
+#SBATCH --partition=jevans-gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00
-#SBATCH --output=logs/embed_questions_%j.out
-#SBATCH --error=logs/embed_questions_%j.err
+#SBATCH --output=/project/jevans/nadav/qaApproach/logs/embed_questions_%j.out
+#SBATCH --error=/project/jevans/nadav/qaApproach/logs/embed_questions_%j.err
 
-# Create temp dir for vLLM
-JOB_TMP=/scratch/midway3/$USER/vllm_tmp/$SLURM_JOBID
-mkdir -p "$JOB_TMP"
+set -euo pipefail
 
-# Point vLLM to temp dir
-export TMPDIR="$JOB_TMP"
-export TEMP="$JOB_TMP"
-export TMP="$JOB_TMP"
-
-echo "Using TMPDIR=$TMPDIR"
-
-# Activate conda environment
+# Ensure micromamba on PATH
+export PATH="$HOME/bin:$PATH"
+export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$HOME/.local/share/mamba}"
 eval "$(micromamba shell hook --shell bash)"
 micromamba activate rag-py310
 
+echo "Re-embedding questions with 'query' prompt..."
+echo "Node: $(hostname)"
+echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
+echo ""
+
 # Run embedding
 cd /project/jevans/nadav/qaApproach
-python scripts/embed_questions.py
+python -u scripts/embed_questions.py
 
-# Cleanup temp dir
-rm -rf "$JOB_TMP"
+echo "Embedding complete!"

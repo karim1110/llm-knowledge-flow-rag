@@ -40,9 +40,15 @@ def main():
         # Get questions as list
         questions = df['question'].tolist()
         
-        # Embed questions
-        print("Embedding questions...", flush=True)
-        embeddings = model.encode(questions, show_progress_bar=True, convert_to_numpy=True)
+        # Embed questions with "query" prompt for better retrieval
+        # Qwen3 models benefit from using prompt_name="query" for search queries
+        print("Embedding questions with 'query' prompt...", flush=True)
+        embeddings = model.encode(
+            questions, 
+            prompt_name="query",
+            show_progress_bar=True, 
+            convert_to_numpy=True
+        )
         
         print(f"Embeddings shape: {embeddings.shape}", flush=True)
         
