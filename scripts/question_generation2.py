@@ -7,15 +7,17 @@ import os
 import re
 from tqdm import tqdm
 from openai import OpenAI
+from dotenv import load_dotenv
 from pathlib import Path
 
 # Config
-SAMPLE_SIZE = 10  # Start small - increase to 100, 1000, etc.
+SAMPLE_SIZE = 100  # Start small - increase to 100, 1000, etc.
 OUTPUT_DIR = "data/question_generation"
 PATENT_SAMPLE_DIR = "data/patent_sample"
 
-openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=openrouter_key)
+load_dotenv()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
 
 system_prompt = """You are an expert in patent comprehension. Your task is to generate structured questions that assess a reader's background knowledge necessary to understand a given patent abstract. The questions should focus on foundational concepts, principles, and applications relevant to the patent's domain without explicitly referencing the patent itself.
 
@@ -24,7 +26,7 @@ The questions should follow Bloom's Taxonomy and be categorized into three level
 2. Understanding: Questions that assess the reader's ability to explain how different elements of similar technologies function and interact.
 3. Applying: Questions that evaluate the reader's ability to apply their knowledge by solving problems, making predictions, or considering real-world applications.
 
-Do not directly reference the patent abstract in any question."""
+Do NOT reference the patent, its title, or its abstract in any question. Assume the questions are given to an expert in the field who has never read the patent, to help understand a key concept in the patent domain. Questions must be general and self-contained."""
 
 promptQ1 = """Patent Title: {patent_title}
 Patent Abstract: {patent_summary}

@@ -35,6 +35,6 @@ export PYSPARK_DRIVER_PYTHON=$(which python)
 
 # Run the script
 cd /project/jevans/nadav/qaApproach
-python -u scripts/load_paragraph_texts.py "$@"
+python -u scripts/load_paragraph_texts.py --merge-context "$@"
 
 echo "Loading complete!"

@@ -210,18 +210,24 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
     verified = 0
     contains_answer_count = 0
     api_errors = 0
-    
-    # Process paragraphs from the selected sample
+    # Per-question stats
+    question_stats = {}  # (patent_id, qtype, question) -> count of 'Y'
+    question_has_yes = {}  # (patent_id, qtype, question) -> bool
+
     with tqdm(total=len(all_paragraphs), desc="Verifying paragraphs") as pbar:
         for patent_id, patent_data, qtype, question_entry, paper, para in all_paragraphs:
             patent_title = patent_data['patent_title']
             patent_abstract = patent_data['patent_abstract']
             question = question_entry['question']
             paragraph_id = para['paragraph_id']
-            
-            # Get paragraph text (should already be loaded)
+
+            key = (patent_id, qtype, question)
+            if key not in question_stats:
+                question_stats[key] = 0
+                question_has_yes[key] = False
+
             para_text = para.get('paragraph_text')
-            
+
             if para_text is None:
                 para['contains_answer'] = 'N'
                 para['answer'] = None
@@ -232,32 +238,41 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
                 if debug:
                     print(f"\n>>> Processing paragraph {processed+1}: {paragraph_id}")
                     print(f"    Patent: {patent_id}, Question type: {qtype}")
-                
+
                 result = verify_paragraph_with_gpt4(
-                    question, 
+                    question,
                     para_text,
                     patent_title,
                     patent_abstract,
                     debug=debug
                 )
-                
+
                 para['contains_answer'] = result['contains_answer']
                 para['answer'] = result['answer']
-                
+
                 if 'error' in result:
                     para['error'] = result['error']
                     log_error(paragraph_id, result['error'])
                     api_errors += 1
-                
+
                 if result['contains_answer'] == 'Y':
                     contains_answer_count += 1
-                
+                    question_stats[key] += 1
+                    question_has_yes[key] = True
+
                 verified += 1
-                
-                # No rate limiting needed - API responses are slow enough (~10s each)
-            
+
             processed += 1
             pbar.update(1)
+
+    # Print per-question stats
+    print("\nPer-question answer stats:")
+    total_questions = len(question_stats)
+    questions_with_yes = sum(1 for v in question_has_yes.values() if v)
+    for key, count in question_stats.items():
+        patent_id, qtype, question = key
+        print(f"Patent: {patent_id} | Type: {qtype} | Question: {question}\n  Number of 'Y' answers: {count} | Has at least one 'Y': {'YES' if question_has_yes[key] else 'NO'}\n")
+    print(f"Summary: {questions_with_yes}/{total_questions} questions have at least one 'Y' answer.")
     
     # Calculate timing
     end_time = time.time()

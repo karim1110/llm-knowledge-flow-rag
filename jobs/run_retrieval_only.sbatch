@@ -19,4 +19,4 @@ echo "Using custom FAISS build for sm90"
 
 # Run retrieval
 cd /project/jevans/nadav/qaApproach
-python scripts/retrieval_only.py --limit 10
+python scripts/retrieval_only.py --limit 100
