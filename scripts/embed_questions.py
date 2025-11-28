@@ -37,8 +37,11 @@ def main():
         df = pd.read_csv(question_path)
         print(f"Loaded {len(df)} questions", flush=True)
         
-        # Get questions as list
-        questions = df['question'].tolist()
+        # Get questions as list (use keywords if available)
+        if 'keywords' in df.columns:
+            questions = df['keywords'].apply(lambda x: ' '.join(eval(x)) if isinstance(x, str) else '').tolist()
+        else:
+            questions = df['question'].tolist()
         
         # Embed questions with "query" prompt for better retrieval
         # Qwen3 models benefit from using prompt_name="query" for search queries

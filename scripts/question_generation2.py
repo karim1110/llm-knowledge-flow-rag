@@ -9,9 +9,10 @@ from tqdm import tqdm
 from openai import OpenAI
 from dotenv import load_dotenv
 from pathlib import Path
+from openai import OpenAI
 
 # Config
-SAMPLE_SIZE = 100  # Start small - increase to 100, 1000, etc.
+SAMPLE_SIZE = 100
 OUTPUT_DIR = "data/question_generation"
 PATENT_SAMPLE_DIR = "data/patent_sample"
 
@@ -39,7 +40,7 @@ Output Format (JSON):
 promptQ2 = """Patent Title: {patent_title}
 Patent Abstract: {patent_summary}
 
-Generate {qnum} questions that assess comprehension by requiring explanation of how different elements in this technology domain work together.
+Generate {qnum} questions that assess comprehension by requiring explanation of how different elements in this technology domain work together. Each question should ask about only one concept or process, not multiple things in the same question.
 
 Output Format (JSON):
 {{"1": "question1", "2": "question2", "3": "question3"}}"""
@@ -89,12 +90,36 @@ def generate_questions(df, prompt_template, output_file):
                     'cpc_class': row.get('cpc_class', ''),
                     'is_computer_science_patent': row.get('is_computer_science_patent', False),
                     'question_id': q_id,
-                    'question': question
+                    'question': question,
+                    'keywords': extract_keywords_llm(title, abstract, question)
                 })
     
     pd.DataFrame(results).to_csv(output_file, index=False)
     print(f"Saved {len(results)} questions to {output_file}")
 
+    # Minimal LLM-based keyword extraction
+def extract_keywords_llm(title, abstract, question):
+    prompt = (
+        f"You are helping to improve a retrieval-augmented generation (RAG) system for patent QA. "
+        f"Given the following patent title, abstract, and question, extract keywords or key concepts that should be used to query a vector database to find paragraphs that answer the question. "
+        f"Be specific and focus on terms that will maximize retrieval accuracy.\n\n"
+        f"Patent Title: {title}\nPatent Abstract: {abstract}\nQuestion: {question}\n\n"
+        f"Your answer will be parsed automatically. Output only: search_query=[...] (Python list of strings, no explanation, no extra text, no code block, no markdown)."    )
+    completion = client.chat.completions.create(
+        model="meta-llama/llama-3.1-70b-instruct",
+        messages=[{"role": "user", "content": prompt}],
+        max_completion_tokens=256
+    )
+    response = completion.choices[0].message.content.strip()
+    # Always parse the first Python list in the response, regardless of prefix
+    match = re.search(r'\[.*?\]', response, re.DOTALL)
+    print(response)
+    if match:
+        try:
+            return eval(match.group())
+        except Exception:
+            return []
+    return []
 # Load CS patents
 cs_files = sorted(Path(PATENT_SAMPLE_DIR).glob("cs_class_*.parquet"))
 print(f"Found {len(cs_files)} CS patent files")
