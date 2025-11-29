@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Verify retrieved paragraphs using GPT-4 via OpenRouter API.
+Verify retrieved paragraphs using OpenRouter API.
 
 For each paragraph in the retrieval results:
 1. Check if paragraph text is already loaded (loaded during retrieval)
-2. Ask GPT-4: Does this paragraph contain the answer? (Y/N)
+2. Ask GPT: Does this paragraph contain the answer? (Y/N)
 3. If Y: Extract the answer using only knowledge from the paragraph
 
 Updates the hierarchical JSON in-place with verification results.
@@ -21,12 +21,11 @@ from tqdm import tqdm
 # Load environment variables
 load_dotenv()
 
-# Configuration
 RESULTS_JSON = "data/question_generation/retrieval_results/retrieval_results_hierarchical.json"
 ERROR_LOG = "data/question_generation/retrieval_results/verification_errors.log"
 TIMING_LOG = "data/question_generation/retrieval_results/verification_timing.log"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL = "openai/gpt-5-nano-2025-08-07"  # GPT-5 nano (latest)
+MODEL = "openai/gpt-4o-mini" 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 def log_error(paragraph_id, error_msg):
@@ -35,10 +34,9 @@ def log_error(paragraph_id, error_msg):
         timestamp = datetime.datetime.now().isoformat()
         f.write(f"[{timestamp}] Paragraph: {paragraph_id} | Error: {error_msg}\n")
 
-def verify_paragraph_with_gpt4(question, paragraph_text, patent_title, patent_abstract, debug=False):
+def verify_paragraph(question, paragraph_text, patent_title, patent_abstract, debug=False):
     """
-    Use GPT-5 nano to verify if paragraph contains the answer.
-    
+    Verifies if paragraph contains the answer.
     Returns:
         dict: {
             'contains_answer': 'Y' or 'N',
@@ -82,37 +80,29 @@ ANSWER: [your answer if Y, or "N/A" if N]
         "max_tokens": 1000  # Higher for reasoning models that need tokens for thinking + output
     }
     
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+    try:        
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", 
+                            headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         
         result = response.json()
         
-        # GPT-5 nano is a reasoning model - check both content and reasoning fields
-        content = result['choices'][0]['message'].get('content') or ''
-        reasoning = result['choices'][0]['message'].get('reasoning') or ''
-        content = content.strip()
-        reasoning = reasoning.strip()
-        
-        # Use whichever field has content (reasoning models put output in reasoning field)
-        text_to_parse = reasoning if reasoning and not content else content
+        # o1-mini puts everything in content (no separate reasoning field)
+        content = result['choices'][0]['message'].get('content', '').strip()
         
         if debug:
             print(f"\n=== DEBUG ===")
             print(f"Content: {content[:200] if content else '(empty)'}")
-            print(f"Reasoning: {reasoning[:200] if reasoning else '(empty)'}")
-            print(f"Text to parse: {text_to_parse[:200] if text_to_parse else '(empty)'}")
         
-        # If content is empty, the model didn't produce structured output
+        # Rest of your parsing stays exactly the same...
         if not content:
             return {
                 'contains_answer': 'N',
                 'answer': None,
-                'error': 'Model produced no structured output (reasoning only)'
+                'error': 'Model produced no structured output'
             }
         
-        # Parse response
-        lines = text_to_parse.split('\n')
+        lines = content.split('\n')
         contains_answer = 'N'
         answer = None
         
@@ -134,7 +124,7 @@ ANSWER: [your answer if Y, or "N/A" if N]
             'contains_answer': contains_answer,
             'answer': answer
         }
-    
+
     except Exception as e:
         error_msg = str(e)
         return {
@@ -142,6 +132,8 @@ ANSWER: [your answer if Y, or "N/A" if N]
             'answer': None,
             'error': error_msg
         }
+
+
 
 def process_results(input_file=None, dry_run=False, limit=None, sample_mode='sequential', debug=False):
     """
@@ -239,7 +231,7 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
                     print(f"\n>>> Processing paragraph {processed+1}: {paragraph_id}")
                     print(f"    Patent: {patent_id}, Question type: {qtype}")
 
-                result = verify_paragraph_with_gpt4(
+                result = verify_paragraph(
                     question,
                     para_text,
                     patent_title,
