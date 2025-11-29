@@ -113,7 +113,6 @@ def extract_keywords_llm(title, abstract, question):
     response = completion.choices[0].message.content.strip()
     # Always parse the first Python list in the response, regardless of prefix
     match = re.search(r'\[.*?\]', response, re.DOTALL)
-    print(response)
     if match:
         try:
             return eval(match.group())
