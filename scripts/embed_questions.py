@@ -39,7 +39,7 @@ def main():
         
         # Get questions as list (use keywords if available)
         if 'keywords' in df.columns:
-            questions = df['keywords'].apply(lambda x: ' '.join(eval(x)) if isinstance(x, str) else '').tolist()
+            questions = df['keywords'].fillna('').tolist()  # Just use raw string
         else:
             questions = df['question'].tolist()
         

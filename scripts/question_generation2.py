@@ -91,13 +91,13 @@ def generate_questions(df, prompt_template, output_file):
                     'is_computer_science_patent': row.get('is_computer_science_patent', False),
                     'question_id': q_id,
                     'question': question,
-                    'keywords': extract_keywords_llm(title, abstract, question)
+                    'keywords': ' '.join(extract_keywords_llm(title, abstract, question))
                 })
     
     pd.DataFrame(results).to_csv(output_file, index=False)
     print(f"Saved {len(results)} questions to {output_file}")
 
-    # Minimal LLM-based keyword extraction
+# Minimal LLM-based keyword extraction
 def extract_keywords_llm(title, abstract, question):
     prompt = (
         f"You are helping to improve a retrieval-augmented generation (RAG) system for patent QA. "
@@ -105,6 +105,7 @@ def extract_keywords_llm(title, abstract, question):
         f"Be specific and focus on terms that will maximize retrieval accuracy.\n\n"
         f"Patent Title: {title}\nPatent Abstract: {abstract}\nQuestion: {question}\n\n"
         f"Your answer will be parsed automatically. Output only: search_query=[...] (Python list of strings, no explanation, no extra text, no code block, no markdown)."    )
+    
     completion = client.chat.completions.create(
         model="meta-llama/llama-3.1-70b-instruct",
         messages=[{"role": "user", "content": prompt}],
@@ -119,6 +120,7 @@ def extract_keywords_llm(title, abstract, question):
         except Exception:
             return []
     return []
+
 # Load CS patents
 cs_files = sorted(Path(PATENT_SAMPLE_DIR).glob("cs_class_*.parquet"))
 print(f"Found {len(cs_files)} CS patent files")
