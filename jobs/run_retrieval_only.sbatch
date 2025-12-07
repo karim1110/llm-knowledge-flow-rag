@@ -4,8 +4,8 @@
 #SBATCH --partition=jevans-gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
-#SBATCH --time=00:10:00
+#SBATCH --mem=128G
+#SBATCH --time=10:00:00
 #SBATCH --output=logs/retrieval_only_%j.out
 #SBATCH --error=logs/retrieval_only_%j.err
 

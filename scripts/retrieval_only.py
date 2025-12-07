@@ -10,6 +10,7 @@ import argparse
 import pandas as pd
 import numpy as np
 import faiss
+from FlagEmbedding import FlagReranker
 from tqdm import tqdm
 from collections import defaultdict
 
@@ -186,6 +187,9 @@ def main(limit_questions=None):
     # Load FAISS index
     index = faiss.read_index(INDEX_FILE)
     print(f"Index loaded: {index.ntotal} vectors")
+    print("Loading GPU reranker...")
+    reranker = FlagReranker('BAAI/bge-reranker-v2-m3', use_fp16=True, device='cuda')
+    print("✓ GPU reranker loaded")
     
     # Move to GPU if available
     if faiss.get_num_gpus() > 0:
@@ -238,20 +242,51 @@ def main(limit_questions=None):
         print(f"Searching for top {K} results per question...")
         distances, indices = index.search(embeddings_subset, K)
         
-        # Process results
-        print("Processing results...")
+        # before reranker :
+        # for idx in tqdm(range(len(df)), desc="Questions"):
+        #     row = df.iloc[idx]
+        #     patent_id = str(row['patent_id'])
+        #     question = row['question']
+            
+        #     # Get top K paragraph IDs
+        #     top_k_indices = indices[idx]
+        #     top_k_paragraph_ids = [id_mapping[i] for i in top_k_indices]
+
+        print("Batch loading ALL paragraph texts...")
+        all_question_paragraphs = []
+        for idx in range(len(df)):
+            top_k_indices = indices[idx]
+            top_k_paragraph_ids = [id_mapping[i] for i in top_k_indices]
+            all_question_paragraphs.extend(top_k_paragraph_ids[:K])
+
+        # Deduplicate + load ONCE
+        unique_paragraphs = list(set(all_question_paragraphs))
+        print(f"Loading {len(unique_paragraphs)} unique paragraphs once...")
+        ALL_PARAGRAPH_TEXTS = load_paragraph_texts(unique_paragraphs, load_adjacent=False)
+        print("✓ All texts loaded")
+
+        print("FAISS(keywords) + GPU rerank...")
         for idx in tqdm(range(len(df)), desc="Questions"):
             row = df.iloc[idx]
             patent_id = str(row['patent_id'])
-            question = row['question']
+            question = row['question']  # For reranker
             
-            # Get top K paragraph IDs
+            # 1. FAISS top-100 (already uses keyword embeddings)
             top_k_indices = indices[idx]
             top_k_paragraph_ids = [id_mapping[i] for i in top_k_indices]
             
+            # 2. Load texts + rerank top-100 → top-10
+            passage_texts = [ALL_PARAGRAPH_TEXTS.get(pid, "") for pid in top_k_paragraph_ids[:K]]
+            scores = reranker.compute_score([[question, passage] for passage in passage_texts])
+            reranked_indices = np.argsort(scores)[::-1][:10]
+            
+            # 3. Final top-10 IDs
+            final_paragraph_ids = [top_k_paragraph_ids[i] for i in reranked_indices]
+            
             # Extract unique paper IDs (preserving order)
-            top_k_paper_ids = [extract_paper_id(pid) for pid in top_k_paragraph_ids]
-            unique_papers = list(dict.fromkeys(top_k_paper_ids))
+            # before reranker : top_k_paper_ids = [extract_paper_id(pid) for pid in top_k_paragraph_ids]
+            final_paper_ids = [extract_paper_id(pid) for pid in final_paragraph_ids]
+            unique_papers = list(dict.fromkeys(final_paper_ids))
             
             # Calculate unique papers at different K values
             unique_at_10 = len(set([extract_paper_id(id_mapping[i]) for i in indices[idx][:10]]))
@@ -275,7 +310,7 @@ def main(limit_questions=None):
             
             # Group top 10 paragraphs by paper
             papers_dict = defaultdict(list)
-            for rank, para_id in enumerate(top_k_paragraph_ids[:10], start=1):
+            for rank, para_id in enumerate(final_paragraph_ids[:10], start=1):
                 paper_id = extract_paper_id(para_id)
                 all_paragraph_ids.add(para_id)  # Track for text loading later
                 papers_dict[paper_id].append({
