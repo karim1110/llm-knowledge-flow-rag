@@ -14,6 +14,7 @@ import json
 import os
 import time
 import datetime
+import glob
 from dotenv import load_dotenv
 import requests
 from tqdm import tqdm
@@ -160,6 +161,43 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
     with open(input_file, 'r') as f:
         data = json.load(f)
     
+    # Check for existing verified results to merge
+    base_name = input_file.replace('.json', '')
+    existing_verified = glob.glob(f"{base_name}_verified_*.json")
+    if existing_verified:
+        # Sort by modification time, take latest
+        existing_verified.sort(key=os.path.getmtime, reverse=True)
+        latest_verified = existing_verified[0]
+        print(f"Found existing verified results: {latest_verified}")
+        print("Merging previous verifications...")
+        
+        with open(latest_verified, 'r') as f:
+            verified_data = json.load(f)
+        
+        # Merge verified data back into current data
+        merged_count = 0
+        for patent_id, patent_data in verified_data.items():
+            if patent_id not in data:
+                continue
+            for qtype in ['remembering', 'understanding']:
+                for i, q_entry in enumerate(patent_data['question_types'].get(qtype, [])):
+                    if i >= len(data[patent_id]['question_types'].get(qtype, [])):
+                        continue
+                    for j, paper in enumerate(q_entry.get('retrieved_papers', [])):
+                        if j >= len(data[patent_id]['question_types'][qtype][i].get('retrieved_papers', [])):
+                            continue
+                        for k, para in enumerate(paper.get('paragraphs', [])):
+                            if k >= len(data[patent_id]['question_types'][qtype][i]['retrieved_papers'][j].get('paragraphs', [])):
+                                continue
+                            # Merge verified fields if they exist
+                            if para.get('contains_answer') is not None:
+                                data[patent_id]['question_types'][qtype][i]['retrieved_papers'][j]['paragraphs'][k]['contains_answer'] = para['contains_answer']
+                                data[patent_id]['question_types'][qtype][i]['retrieved_papers'][j]['paragraphs'][k]['answer'] = para.get('answer')
+                                if para.get('error'):
+                                    data[patent_id]['question_types'][qtype][i]['retrieved_papers'][j]['paragraphs'][k]['error'] = para['error']
+                                merged_count += 1
+        print(f"Merged {merged_count} previously verified paragraphs")
+    
     # Count total paragraphs and check if texts are loaded
     total_paragraphs = 0
     missing_texts = 0
@@ -217,6 +255,17 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
             if key not in question_stats:
                 question_stats[key] = 0
                 question_has_yes[key] = False
+
+            # Skip if already verified
+            if para.get('contains_answer') is not None:
+                processed += 1
+                verified += 1
+                if para['contains_answer'] == 'Y':
+                    contains_answer_count += 1
+                    question_stats[key] += 1
+                    question_has_yes[key] = True
+                pbar.update(1)
+                continue
 
             para_text = para.get('paragraph_text')
 
