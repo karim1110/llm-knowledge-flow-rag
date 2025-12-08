@@ -17,6 +17,6 @@ micromamba activate rag-py310
 export PYTHONPATH=/project/jevans/nadav/qaApproach/faiss_build/faiss/build/faiss/python:$PYTHONPATH
 echo "Using custom FAISS build for sm90"
 
-# Run retrieval
+# Run retrieval for all 1000 questions
 cd /project/jevans/nadav/qaApproach
-python scripts/retrieval_only.py --limit 100
+python scripts/retrieval_only.py

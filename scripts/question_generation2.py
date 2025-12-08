@@ -6,15 +6,15 @@ import json
 import os
 import re
 from tqdm import tqdm
-from openai import OpenAI
 from dotenv import load_dotenv
 from pathlib import Path
 from openai import OpenAI
 
 # Config
-SAMPLE_SIZE = 100
+SAMPLE_SIZE = 170  # Generate for 170 patents to get ~1000 questions (6 questions per patent)
 OUTPUT_DIR = "data/question_generation"
 PATENT_SAMPLE_DIR = "data/patent_sample"
+TARGET_QUESTIONS = 1000
 
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -65,8 +65,22 @@ def call_llm(prompt):
     return None
 
 def generate_questions(df, prompt_template, output_file):
+    """Generate questions and append to existing file if it exists."""
+    import os
+    
+    # Load existing questions if file exists
+    existing_ids = set()
+    if os.path.exists(output_file):
+        existing_df = pd.read_csv(output_file)
+        existing_ids = set(existing_df['patent_id'].unique())
+        print(f"Found {len(existing_ids)} existing patents in {Path(output_file).name}")
+    
     results = []
     for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Generating {Path(output_file).stem}"):
+        # Skip if already generated for this patent
+        if row['patent_id'] in existing_ids:
+            continue
+        
         title = row.get('patent_title', '')
         abstract = row.get('patent_abstract_x', row.get('patent_abstract_y', ''))
         
@@ -94,8 +108,16 @@ def generate_questions(df, prompt_template, output_file):
                     'keywords': ' '.join(extract_keywords_llm(title, abstract, question))
                 })
     
-    pd.DataFrame(results).to_csv(output_file, index=False)
-    print(f"Saved {len(results)} questions to {output_file}")
+    # Append to existing file or create new one
+    if os.path.exists(output_file) and len(results) > 0:
+        existing_df = pd.read_csv(output_file)
+        new_df = pd.DataFrame(results)
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        combined_df.to_csv(output_file, index=False)
+        print(f"Appended {len(results)} new questions to {output_file} (total: {len(combined_df)})")
+    elif len(results) > 0:
+        pd.DataFrame(results).to_csv(output_file, index=False)
+        print(f"Saved {len(results)} questions to {output_file}")
 
 # Minimal LLM-based keyword extraction
 def extract_keywords_llm(title, abstract, question):
