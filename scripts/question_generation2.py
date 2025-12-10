@@ -65,7 +65,7 @@ def call_llm(prompt):
     return None
 
 def generate_questions(df, prompt_template, output_file):
-    """Generate questions and append to existing file if it exists."""
+    """Generate questions and append to existing file if it exists, with checkpointing every 500 patents."""
     import os
     
     # Load existing questions if file exists
@@ -76,6 +76,7 @@ def generate_questions(df, prompt_template, output_file):
         print(f"Found {len(existing_ids)} existing patents in {Path(output_file).name}")
     
     results = []
+    patent_count = 0
     for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Generating {Path(output_file).stem}"):
         # Skip if already generated for this patent
         if row['patent_id'] in existing_ids:
@@ -107,17 +108,33 @@ def generate_questions(df, prompt_template, output_file):
                     'question': question,
                     # 'keywords': ' '.join(extract_keywords_llm(title, abstract, question))
                 })
+            patent_count += 1
+            
+            # Checkpoint every 500 patents
+            if patent_count % 500 == 0:
+                if os.path.exists(output_file):
+                    existing_df = pd.read_csv(output_file)
+                    new_df = pd.DataFrame(results)
+                    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                    combined_df.to_csv(output_file, index=False)
+                    print(f"Checkpoint: Saved {len(results)} questions (total: {len(combined_df)})")
+                else:
+                    pd.DataFrame(results).to_csv(output_file, index=False)
+                    print(f"Checkpoint: Created {output_file} with {len(results)} questions")
+                results = []
+                existing_ids.update(set(pd.read_csv(output_file)['patent_id'].unique()))
     
-    # Append to existing file or create new one
-    if os.path.exists(output_file) and len(results) > 0:
-        existing_df = pd.read_csv(output_file)
-        new_df = pd.DataFrame(results)
-        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-        combined_df.to_csv(output_file, index=False)
-        print(f"Appended {len(results)} new questions to {output_file} (total: {len(combined_df)})")
-    elif len(results) > 0:
-        pd.DataFrame(results).to_csv(output_file, index=False)
-        print(f"Saved {len(results)} questions to {output_file}")
+    # Final save for remaining questions
+    if len(results) > 0:
+        if os.path.exists(output_file):
+            existing_df = pd.read_csv(output_file)
+            new_df = pd.DataFrame(results)
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            combined_df.to_csv(output_file, index=False)
+            print(f"Final save: Appended {len(results)} questions to {output_file} (total: {len(combined_df)})")
+        else:
+            pd.DataFrame(results).to_csv(output_file, index=False)
+            print(f"Final save: Saved {len(results)} questions to {output_file}")
 
 # Minimal LLM-based keyword extraction
 def extract_keywords_llm(title, abstract, question):

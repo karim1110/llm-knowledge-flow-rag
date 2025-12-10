@@ -17,7 +17,7 @@ FAISS Index (pre-built) → Patents → Questions (Bloom's taxonomy) → Embeddi
    - Mapping: `indexes/patent_id_mapping_ivf.npy` (paragraph IDs)
    - Configuration: 8192 clusters, PQ64x8, Float16 lookup tables
 
-2. **Question Generation** (`scripts/question_generation2.py`)
+2. **Question Generation** (`scripts/question_generation2.py`) (works on sbatch job without gpu)
    - Generates questions about patents using Bloom's taxonomy levels (Remembering, Understanding)
    - Output: `data/question_generation/questions_*.csv`
 

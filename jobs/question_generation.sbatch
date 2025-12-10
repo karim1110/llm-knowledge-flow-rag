@@ -3,7 +3,7 @@
 #SBATCH --account=pi-jevans
 #SBATCH --partition=jevans
 #SBATCH --mem=128GB
-#SBATCH --time=04:00:00
+#SBATCH --time=31:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --output=logs/question_generation_%j.out
 #SBATCH --error=logs/question_generation_%j.err
