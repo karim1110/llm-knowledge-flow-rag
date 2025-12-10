@@ -1,5 +1,9 @@
 # Tracing Understanding: Measuring Knowledge Flow from Science to Technology Using Large Language Models
 
+### Running Long Scripts with tmux
+
+For long-running scripts on interactive nodes, use tmux: `tmux new-session -d -s name -c /path "micromamba activate rag-py310 && python script.py"`. Check without attaching: `tmux capture-pane -t name -p`. Attach/detach: `tmux attach -t name` then `Ctrl+B, D`.
+
 ### Data Flow
 ```
 FAISS Index (pre-built) → Patents → Questions (Bloom's taxonomy) → Embeddings → Retrieval → Evaluation

@@ -105,7 +105,7 @@ def generate_questions(df, prompt_template, output_file):
                     'is_computer_science_patent': row.get('is_computer_science_patent', False),
                     'question_id': q_id,
                     'question': question,
-                    'keywords': ' '.join(extract_keywords_llm(title, abstract, question))
+                    # 'keywords': ' '.join(extract_keywords_llm(title, abstract, question))
                 })
     
     # Append to existing file or create new one
@@ -155,9 +155,9 @@ for f in cs_files:
 all_patents = pd.concat(dfs, ignore_index=True)
 print(f"Total CS patents: {len(all_patents):,}")
 
-# Sample
-sample_df = all_patents.sample(n=min(SAMPLE_SIZE, len(all_patents)), random_state=42)
-print(f"Sampled {len(sample_df)} patents for question generation")
+# Use all patents (no sampling) .sample(n=min(SAMPLE_SIZE, len(all_patents))
+sample_df = all_patents
+print(f"Using all {len(sample_df)} patents for question generation")
 
 # Generate both question types
 os.makedirs(OUTPUT_DIR, exist_ok=True)

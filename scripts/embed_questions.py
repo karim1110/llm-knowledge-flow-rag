@@ -38,10 +38,10 @@ def main():
         print(f"Loaded {len(df)} questions", flush=True)
         
         # Get questions as list (use keywords if available)
-        if 'keywords' in df.columns:
-            questions = df['keywords'].fillna('').tolist()  # Just use raw string
-        else:
-            questions = df['question'].tolist()
+        #if 'keywords' in df.columns:
+        #    questions = df['keywords'].fillna('').tolist()  # remove keywords
+        #else:
+        questions = df['question'].tolist()
         
         # Embed questions with "query" prompt for better retrieval
         # Qwen3 models benefit from using prompt_name="query" for search queries
