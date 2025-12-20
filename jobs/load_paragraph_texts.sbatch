@@ -4,8 +4,8 @@
 #SBATCH --job-name=load_para_texts
 #SBATCH --output=/project/jevans/nadav/qaApproach/logs/load_para_texts_%j.out
 #SBATCH --error=/project/jevans/nadav/qaApproach/logs/load_para_texts_%j.err
-#SBATCH --time=1:00:00
-#SBATCH --mem=128G
+#SBATCH --time=31:00:00
+#SBATCH --mem=500G
 #SBATCH --cpus-per-task=16
 
 set -euo pipefail

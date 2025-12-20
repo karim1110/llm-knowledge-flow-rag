@@ -15,6 +15,7 @@ import os
 import time
 import datetime
 import glob
+import math
 from dotenv import load_dotenv
 import requests
 from tqdm import tqdm
@@ -136,7 +137,7 @@ ANSWER: [your answer if Y, or "N/A" if N]
 
 
 
-def process_results(input_file=None, dry_run=False, limit=None, sample_mode='sequential', debug=False):
+def process_results(input_file=None, dry_run=False, limit=None, sample_mode='sequential', debug=False, shard_id=None, num_shards=None):
     """
     Process all paragraphs in the hierarchical JSON and verify them.
     Assumes paragraph texts are already loaded during retrieval.
@@ -147,23 +148,48 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
         limit: If set, only process first N paragraphs
         sample_mode: 'sequential' (default) or 'distributed' (sample evenly across patents/questions)
         debug: If True, print debug information
+        shard_id: Index of the current shard (0-based)
+        num_shards: Total number of shards
     """
     
     if input_file is None:
         input_file = RESULTS_JSON
     
-    # Clear previous logs
-    open(ERROR_LOG, 'w').close()
+    # Clear previous logs (only if not sharded or shard 0 to avoid race conditions? actually logs should probably be sharded too)
+    if shard_id is None or shard_id == 0:
+        open(ERROR_LOG, 'w').close()
     
     start_time = time.time()
     
     print(f"Loading hierarchical results from: {input_file}")
     with open(input_file, 'r') as f:
         data = json.load(f)
+
+    # Sharding logic
+    if shard_id is not None and num_shards is not None:
+        print(f"Running shard {shard_id+1}/{num_shards}")
+        patent_ids = sorted(list(data.keys()))
+        total_patents = len(patent_ids)
+        shard_size = math.ceil(total_patents / num_shards)
+        start_idx = shard_id * shard_size
+        end_idx = min(start_idx + shard_size, total_patents)
+        
+        shard_patents = patent_ids[start_idx:end_idx]
+        print(f"Shard processing patents {start_idx} to {end_idx} ({len(shard_patents)} patents)")
+        
+        # Filter data to only include these patents
+        data = {pid: data[pid] for pid in shard_patents}
     
     # Check for existing verified results to merge
     base_name = input_file.replace('.json', '')
-    existing_verified = glob.glob(f"{base_name}_verified_*.json")
+    
+    if shard_id is not None:
+        # Look for specific shard checkpoint
+        checkpoint_pattern = f"{base_name}_verified_shard_{shard_id}_checkpoint.json"
+        existing_verified = glob.glob(checkpoint_pattern)
+    else:
+        existing_verified = glob.glob(f"{base_name}_verified_*.json")
+        
     if existing_verified:
         # Sort by modification time, take latest
         existing_verified.sort(key=os.path.getmtime, reverse=True)
@@ -243,6 +269,7 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
     # Per-question stats
     question_stats = {}  # (patent_id, qtype, question) -> count of 'Y'
     question_has_yes = {}  # (patent_id, qtype, question) -> bool
+    recent_yes_responses = []  # Track recent 'Y' responses for printing
 
     with tqdm(total=len(all_paragraphs), desc="Verifying paragraphs") as pbar:
         for patent_id, patent_data, qtype, question_entry, paper, para in all_paragraphs:
@@ -264,6 +291,14 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
                     contains_answer_count += 1
                     question_stats[key] += 1
                     question_has_yes[key] = True
+                    # Track for printing
+                    if len(recent_yes_responses) < 10:
+                        recent_yes_responses.append({
+                            'question': question,
+                            'answer': para.get('answer'),
+                            'qtype': qtype,
+                            'patent_id': patent_id
+                        })
                 pbar.update(1)
                 continue
 
@@ -300,11 +335,50 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
                     contains_answer_count += 1
                     question_stats[key] += 1
                     question_has_yes[key] = True
+                    
+                    # Print first 10 Y responses immediately
+                    if contains_answer_count <= 10:
+                        print(f"\n[FOUND Y ANSWER #{contains_answer_count}]", flush=True)
+                        print(f"Q ({qtype}): {question}", flush=True)
+                        print(f"A: {result.get('answer')}\n", flush=True)
+
+                    # Track for printing
+                    if len(recent_yes_responses) < 10:
+                        recent_yes_responses.append({
+                            'question': question,
+                            'answer': result.get('answer'),
+                            'qtype': qtype,
+                            'patent_id': patent_id
+                        })
 
                 verified += 1
 
             processed += 1
             pbar.update(1)
+            
+            # Save checkpoint every 20,000 paragraphs and print recent Y responses
+            if processed % 20000 == 0:
+                if shard_id is not None:
+                    checkpoint_file = input_file.replace('.json', f'_verified_shard_{shard_id}_checkpoint.json')
+                else:
+                    checkpoint_file = input_file.replace('.json', '_verified_checkpoint.json')
+                    
+                with open(checkpoint_file, 'w') as f:
+                    json.dump(data, f, indent=2)
+                print(f"\n{'='*80}")
+                print(f"Checkpoint saved: {processed} paragraphs processed")
+                
+                # Print recent Y responses
+                if recent_yes_responses:
+                    print(f"\nLast up to 10 'Y' responses:")
+                    for i, resp in enumerate(recent_yes_responses[-10:], 1):
+                        print(f"{i}. Q ({resp['qtype']}): {resp['question'][:80]}...")
+                        if resp['answer']:
+                            print(f"   A: {resp['answer'][:100]}...")
+                        print()
+                
+                recent_yes_responses = []  # Reset for next checkpoint
+                print(f"{'='*80}\n")
 
     # Print per-question stats
     print("\nPer-question answer stats:")
@@ -322,6 +396,8 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
     # Save updated results
     if limit and limit < total_paragraphs:
         output_file = input_file.replace('.json', f'_verified_{limit}.json')
+    elif shard_id is not None:
+        output_file = input_file.replace('.json', f'_verified_shard_{shard_id}.json')
     else:
         output_file = input_file.replace('.json', '_verified.json')
     
@@ -329,7 +405,11 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
         json.dump(data, f, indent=2)
     
     # Log timing information
-    with open(TIMING_LOG, 'w') as f:
+    log_file = TIMING_LOG
+    if shard_id is not None:
+        log_file = TIMING_LOG.replace('.log', f'_shard_{shard_id}.log')
+        
+    with open(log_file, 'w') as f:
         f.write(f"Verification Run: {datetime.datetime.now().isoformat()}\n")
         f.write(f"{'='*80}\n")
         f.write(f"Total paragraphs: {processed}\n")
@@ -352,7 +432,7 @@ def process_results(input_file=None, dry_run=False, limit=None, sample_mode='seq
     print(f"Saved to: {output_file}")
     if api_errors > 0:
         print(f"Error log: {ERROR_LOG}")
-    print(f"Timing log: {TIMING_LOG}")
+    print(f"Timing log: {log_file}")
 
 def main():
     import argparse
@@ -363,6 +443,8 @@ def main():
     parser.add_argument('--limit', type=int, help='Process only first N paragraphs')
     parser.add_argument('--distributed', action='store_true', help='Sample evenly across patents/questions (use with --limit)')
     parser.add_argument('--debug', action='store_true', help='Print debug information')
+    parser.add_argument('--shard-index', type=int, help='Index of current shard (0-based)')
+    parser.add_argument('--total-shards', type=int, help='Total number of shards')
     
     args = parser.parse_args()
     
@@ -375,7 +457,8 @@ def main():
     
     sample_mode = 'distributed' if args.distributed else 'sequential'
     process_results(input_file=args.input, dry_run=args.dry_run, limit=args.limit, 
-                   sample_mode=sample_mode, debug=args.debug)
+                   sample_mode=sample_mode, debug=args.debug,
+                   shard_id=args.shard_index, num_shards=args.total_shards)
 
 if __name__ == "__main__":
     main()

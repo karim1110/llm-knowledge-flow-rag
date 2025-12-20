@@ -61,15 +61,15 @@ def merge_with_context(paragraph_id, paragraph_text, all_paragraphs, min_length=
     return "\n\n".join(parts)
 
 def main(merge_context=False, input_json=None, output_json=None):
+    if input_json is None:
+        input_json = INPUT_JSON
+
     # Set default output based on merge_context flag
     if output_json is None:
         if merge_context:
-            output_json = INPUT_JSON.replace('.json', '_merged.json')
+            output_json = input_json.replace('.json', '_merged.json')
         else:
-            output_json = INPUT_JSON.replace('.json', '_baseline.json')
-    
-    if input_json is None:
-        input_json = INPUT_JSON
+            output_json = input_json.replace('.json', '_baseline.json')
     
     print("="*80)
     print("Loading Paragraph Texts with Spark")

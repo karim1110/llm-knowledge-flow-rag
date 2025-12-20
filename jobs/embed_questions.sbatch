@@ -3,9 +3,9 @@
 #SBATCH --account=pi-jevans
 #SBATCH --partition=jevans-gpu
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=00:30:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=12G
+#SBATCH --time=31:00:00
 #SBATCH --output=/project/jevans/nadav/qaApproach/logs/embed_questions_%j.out
 #SBATCH --error=/project/jevans/nadav/qaApproach/logs/embed_questions_%j.err
 

@@ -20,13 +20,12 @@ ID_MAPPING_FILE = "indexes/patent_id_mapping_ivf.npy"
 EMBEDDINGS_DIR = "data/question_generation/embeddings"
 PARQUET_SHARDS_DIR = "/project/jevans/apto_data_engineering/data/arxiv/s2_arxiv_full_text_grobid/shards_partitioned"
 OUTPUT_DIR = "data/question_generation/retrieval_results"
-OUTPUT_JSON = os.path.join(OUTPUT_DIR, "retrieval_results_hierarchical.json")
 K = 100  # Top K results
 
 # Embedding files
 EMBEDDING_FILES = [
     ("questions_remembering_embeddings.npy", "questions_remembering_metadata.csv", "remembering"),
-    ("questions_understanding_embeddings.npy", "questions_understanding_metadata.csv", "understanding")
+    # ("questions_understanding_2_embeddings.npy", "questions_understanding_2_metadata.csv", "understanding")
 ]
 
 def extract_paper_id(paragraph_id):
@@ -206,11 +205,10 @@ def main(limit_questions=None):
     print(f"Loaded {len(id_mapping)} IDs")
     print(f"First 5 IDs: {id_mapping[:5]}")
     
+    
     # Create output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # Initialize hierarchical structure
-    patents = {}
     all_paragraph_ids = set()  # Track all paragraph IDs for text loading
     
     # Process each embedding file
@@ -219,6 +217,25 @@ def main(limit_questions=None):
         print(f"Processing: {bloom_level}")
         print(f"{'='*80}")
         
+        # Create dynamic output filename per question type
+        OUTPUT_JSON = os.path.join(OUTPUT_DIR, f"retrieval_results_{bloom_level}.json")
+        
+        # Check for latest checkpoint to resume from (per question type)
+        import glob
+        checkpoint_files = glob.glob(OUTPUT_JSON.replace('.json', '_checkpoint_*.json'))
+        start_idx = 0  # Default: start from beginning
+        if checkpoint_files:
+            # Sort numerically by extracting checkpoint number
+            checkpoint_files.sort(key=lambda x: int(x.split('_checkpoint_')[1].split('.')[0]))
+            latest_checkpoint = checkpoint_files[-1]
+            # Extract the checkpoint number to know where to resume from
+            start_idx = int(latest_checkpoint.split('_checkpoint_')[1].split('.')[0])
+            with open(latest_checkpoint, 'r') as f:
+                patents = json.load(f)
+            print(f"✓ Resumed from checkpoint: {latest_checkpoint} (will skip to question {start_idx})")
+        else:
+            patents = {}
+        
         # Load embeddings
         emb_path = os.path.join(EMBEDDINGS_DIR, emb_file)
         embeddings = np.load(emb_path)
@@ -226,17 +243,20 @@ def main(limit_questions=None):
         
         # Load metadata
         meta_path = os.path.join(EMBEDDINGS_DIR, meta_file)
-        df = pd.read_csv(meta_path)
+        df = pd.read_csv(meta_path, low_memory=False)
+        
+        # Sync with embeddings (in case some were dropped due to NaN)
+        df = df.head(len(embeddings))
+        print(f"Loaded metadata: {len(df)} questions (synced with {len(embeddings)} embeddings)")
+        
+        # Get embeddings for the questions we're processing
+        embeddings_subset = embeddings[:len(df)]
         
         # Apply limit if specified
         if limit_questions:
             df = df.head(limit_questions)
+            embeddings_subset = embeddings_subset[:limit_questions]
             print(f"Limited to first {len(df)} questions for testing")
-        else:
-            print(f"Loaded metadata: {len(df)} questions")
-        
-        # Get embeddings for the questions we're processing
-        embeddings_subset = embeddings[:len(df)]
         
         # Perform retrieval
         print(f"Searching for top {K} results per question...")
@@ -266,7 +286,13 @@ def main(limit_questions=None):
         print("✓ All texts loaded")
 
         print("FAISS(keywords) + GPU rerank...")
-        for idx in tqdm(range(len(df)), desc="Questions"):
+        checkpoint_interval = 5000  # Save every 5000 questions
+        
+        # Skip already processed questions if resuming from checkpoint
+        if start_idx > 0:
+            print(f"Skipping first {start_idx} questions (already processed)")
+        
+        for idx in tqdm(range(start_idx, len(df)), desc="Questions", initial=start_idx, total=len(df)):
             row = df.iloc[idx]
             patent_id = str(row['patent_id'])
             question = row['question']  # For reranker
@@ -275,13 +301,29 @@ def main(limit_questions=None):
             top_k_indices = indices[idx]
             top_k_paragraph_ids = [id_mapping[i] for i in top_k_indices]
             
+            # Ensure question is a string
+            if not isinstance(question, str):
+                # print(f"Warning: Question at index {idx} is not a string: {question}. Converting to string.")
+                question = str(question) if pd.notna(question) else ""
+
             # 2. Load texts + rerank top-100 → top-10
-            passage_texts = [ALL_PARAGRAPH_TEXTS.get(pid, "") for pid in top_k_paragraph_ids[:K]]
-            scores = reranker.compute_score([[question, passage] for passage in passage_texts])
-            reranked_indices = np.argsort(scores)[::-1][:10]
+            # Filter out empty passages and keep track of original indices
+            passage_data = []
+            for i, pid in enumerate(top_k_paragraph_ids[:K]):
+                passage_text = ALL_PARAGRAPH_TEXTS.get(pid, "")
+                # Ensure passage is a string and not empty
+                if passage_text and isinstance(passage_text, str) and passage_text.strip():
+                    passage_data.append((i, pid, passage_text))
             
-            # 3. Final top-10 IDs
-            final_paragraph_ids = [top_k_paragraph_ids[i] for i in reranked_indices]
+            # If we have passages to rerank, do reranking; otherwise use top-K as-is
+            if passage_data and question.strip():
+                passage_texts = [p[2] for p in passage_data]
+                scores = reranker.compute_score([[question, passage] for passage in passage_texts])
+                reranked_order = np.argsort(scores)[::-1]  # Sort by score descending
+                final_paragraph_ids = [passage_data[i][1] for i in reranked_order[:10]]
+            else:
+                # No passages found or empty question, use FAISS results directly
+                final_paragraph_ids = top_k_paragraph_ids[:10]
             
             # Extract unique paper IDs (preserving order)
             # before reranker : top_k_paper_ids = [extract_paper_id(pid) for pid in top_k_paragraph_ids]
@@ -347,6 +389,13 @@ def main(limit_questions=None):
             }
             
             patents[patent_id]['question_types'][bloom_level].append(question_entry)
+            
+            # Checkpoint every 5000 questions
+            if (idx + 1) % checkpoint_interval == 0:
+                checkpoint_file = OUTPUT_JSON.replace('.json', f'_checkpoint_{idx+1}.json')
+                with open(checkpoint_file, 'w') as f:
+                    json.dump(patents, f, indent=2)
+                print(f"Checkpoint saved at question {idx+1}: {checkpoint_file}")
     
     # Skip loading paragraph texts - do this in separate job
     # Just initialize paragraph_text fields as None
