@@ -34,7 +34,7 @@ FAISS Index (pre-built) → Patents → Questions (Bloom's taxonomy) → Embeddi
    - Supports optional context merging for short paragraphs (`--merge-context`)
    - Output: `retrieval_results_hierarchical_baseline.json` or `retrieval_results_hierarchical_merged.json`
 
-6. **Evaluation** (`scripts/verify_paragraphs.py`)
+6. **Evaluation** (`scripts/verify_paragraphs.py`) 
+   - jobs/verify_paragraphs_remembering_array.sbatch
    - Evaluates retrieval results using LLM verification
    - Prints per-question stats (number of 'Y' answers, at least one 'Y', summary)
-   - Example of command to run the script : `python scripts/verify_paragraphs.py --input data/question_generation/retrieval_results/retrieval_results_hierarchical_merged.json --limit 100 --distributed`
